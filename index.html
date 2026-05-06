@@ -2873,6 +2873,28 @@ function renderSheet_generate(s) {
   wrap.className = 'sheet-inner';
   wrap.innerHTML = '<div class="sheet-hdr"><h1>Generate Proforma</h1><p>Select which sections to include in your generated proforma, then download or print.</p></div>';
 
+  // Orientation toggle
+  const orientCard = el('div')
+  orientCard.style.cssText = 'background:#fff;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;margin-bottom:16px;'
+  const orientHdr = el('div')
+  orientHdr.style.cssText = 'padding:12px 18px;border-bottom:1px solid #e8e8e8;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;'
+  orientHdr.textContent = 'Output Orientation'
+  const orientBody = el('div')
+  orientBody.style.cssText = 'padding:18px;display:flex;gap:10px;'
+  ;['portrait','landscape'].forEach(mode => {
+    const btn = el('button')
+    const s0 = Store.get()
+    const active = s0.printOrientation===mode || (!s0.printOrientation && mode==='portrait')
+    btn.className = 'btn ' + (active ? 'btn-primary' : 'btn-secondary')
+    btn.style.flex = '1'
+    btn.textContent = mode === 'portrait' ? '◻ Portrait (Letter)' : '▭ Landscape (Letter)'
+    btn.onclick = () => { Store.set({printOrientation: mode}); renderApp() }
+    orientBody.appendChild(btn)
+  })
+  orientCard.appendChild(orientHdr)
+  orientCard.appendChild(orientBody)
+  wrap.appendChild(orientCard)
+
   // Prepared by
   function setInp(key){ return v => Store.set({[key]:v}); }
   wrap.appendChild(card('Prepared By', body => {
@@ -2975,196 +2997,488 @@ function renderSheet_generate(s) {
 
 // ── PROFORMA GENERATOR ────────────────────────────────────────────
 function generateProforma(s, calc) {
-  const prop    = s.properties[0] || {};
-  const address = prop.address || 'Property Proforma';
-  const city    = [prop.city, prop.province].filter(Boolean).join(', ');
-  const date    = new Date().toLocaleDateString('en-CA',{year:'numeric',month:'long',day:'numeric'});
-  const gfaVal  = U.p(s.gfa) || 1;
+  const prop    = s.properties[0] || {}
+  const address = prop.address || 'Property Proforma'
+  const city    = [prop.city, prop.province].filter(Boolean).join(', ')
+  const date    = new Date().toLocaleDateString('en-CA',{year:'numeric',month:'long',day:'numeric'})
+  const gfa     = U.p(s.gfa, 1)
+  const units   = U.p(s.units, 1)
+  const siteSF  = U.p(s.siteSF, 1)
+  const GOLD    = '#c9993a'
 
-  let html = `<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  // ── ORIENTATION ────────────────────────────────────────────────
+  const orientation = s.printOrientation || 'portrait'
+  const isLandscape  = orientation === 'landscape'
+
+  // ── DSCR STATUS ────────────────────────────────────────────────
+  const dscrOk   = calc.dscr >= 1.10
+  const dscrWarn = calc.dscr > 0 && calc.dscr < 1.10
+  const dscrPct  = Math.min(Math.max((calc.dscr / 1.5) * 100, 0), 100)
+  const dscrCol  = dscrOk ? '#2a7a2a' : dscrWarn ? '#8a5c00' : '#c00'
+  const dscrBg   = dscrOk ? '#f0f8f0' : dscrWarn ? '#fff8f0' : '#fff0f0'
+  const dscrMsg  = dscrOk
+    ? `✓ DSCR ${U.x(calc.dscr)} — CMHC MLI Select Compliant`
+    : calc.dscr > 0
+    ? `⚠ DSCR ${U.x(calc.dscr)} — Below 1.10x minimum required for CMHC MLI Select`
+    : 'Enter revenue and financing to calculate DSCR'
+
+  // ── RLV STATUS ─────────────────────────────────────────────────
+  const rlvOk   = calc.rlvVar >= 0
+  const rlvMsg  = rlvOk
+    ? `✓ RLV ${U.$(calc.rlv)} supports the asking land price`
+    : `⚠ RLV ${U.$(calc.rlv)} is ${U.$(Math.abs(calc.rlvVar))} below the asking land price of ${U.$(U.p(s.land))}`
+
+  // ── UNIT MIX CARDS ─────────────────────────────────────────────
+  const unitTypes = [
+    {label:'Studio',          count:U.p(s.studio,0),      avg:U.p(s.netSF,0)>0&&U.p(s.units,0)>0?Math.round(U.p(s.netSF,0)/U.p(s.units,0)):0},
+    {label:'1 Bedroom',       count:U.p(s.oneBed,0)+U.p(s.oneBedDen,0)+U.p(s.oneBedAda,0), avg:0},
+    {label:'2 Bedroom',       count:U.p(s.twoBed,0)+U.p(s.twoBedDen,0)+U.p(s.twoBedAda,0), avg:0},
+    {label:'3 Bedroom',       count:U.p(s.threeBed,0)+U.p(s.threeBedDen,0)+U.p(s.threeBedAda,0), avg:0},
+  ].filter(u => u.count > 0)
+
+  const hasUnitMix = unitTypes.some(u => u.count > 0)
+
+  // ── COMPS TABLE ─────────────────────────────────────────────────
+  const fsr = U.p(s.fsr, 2)
+  const hasComps = s.comps && s.comps.some(c => c.address)
+
+  // ── SCHEDULE ───────────────────────────────────────────────────
+  const hasSchedule = s.schedule && s.schedule.some(t => t.start || t.end)
+
+  let html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Proforma — ${address}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;color:#000;background:#fff;padding:32px;}
-h1{font-size:28px;font-weight:700;margin-bottom:4px;}
-h2{font-size:13px;font-weight:600;color:#555;margin-bottom:20px;}
-.kpi{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:#ccc;border:1px solid #ccc;border-radius:8px;overflow:hidden;margin-bottom:20px;}
-.kpi-c{background:#fff;padding:14px 12px;}
-.kpi-c.hl{background:#000;color:#fff;}
-.kpi-n{font-size:18px;font-weight:700;}
-.kpi-l{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#888;margin-top:2px;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;color:#000;background:#fff;padding:${isLandscape?'24px 32px':'28px'};}
+.no-print{display:block;}
+.orient-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#000;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;margin:0 6px 0 0;font-family:inherit;}
+.orient-btn:hover{background:#333;}
+.print-btn{display:inline-flex;align-items:center;gap:6px;padding:10px 22px;background:${GOLD};color:#000;border:none;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;}
+.print-btn:hover{background:#b8882e;}
+.toolbar{position:fixed;bottom:24px;right:24px;display:flex;gap:8px;z-index:999;}
+
+/* COVER */
+.cover{background:#fff;border:1px solid #e0e0e0;border-radius:10px;padding:36px 40px;margin-bottom:20px;page-break-after:always;display:flex;flex-direction:column;min-height:${isLandscape?'320px':'480px'};}
+.cover-top{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:auto;}
+.cover-logo-area{display:flex;align-items:center;gap:12px;}
+.cover-logo{height:44px;width:auto;object-fit:contain;}
+.cover-logo-text{font-size:15px;font-weight:800;letter-spacing:.04em;color:#000;}
+.cover-date{font-size:10px;color:#888;}
+.cover-body{margin-top:32px;}
+.cover-eyebrow{font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:${GOLD};font-weight:700;margin-bottom:10px;}
+.cover-title{font-size:${isLandscape?'34px':'42px'};font-weight:800;line-height:1.05;color:#000;margin-bottom:8px;}
+.cover-address{font-size:14px;color:#555;margin-bottom:6px;}
+.cover-tags{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
+.cover-tag{padding:4px 12px;background:#f0f0f0;border-radius:99px;font-size:10px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.04em;}
+.cover-tag.gold{background:${GOLD};color:#fff;}
+.cover-divider{height:3px;background:${GOLD};margin:28px 0 24px;border-radius:2px;width:60px;}
+.cover-kpi-row{display:grid;grid-template-columns:repeat(${isLandscape?'6':'4'},1fr);gap:1px;background:#e0e0e0;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;margin-top:auto;}
+.ckpi{background:#fff;padding:14px 12px;}
+.ckpi.hl{background:#000;}
+.ckpi-n{font-size:${isLandscape?'16px':'18px'};font-weight:800;color:#000;}
+.ckpi.hl .ckpi-n{color:${GOLD};}
+.ckpi-l{font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#888;margin-top:3px;}
+.ckpi.hl .ckpi-l{color:rgba(255,255,255,.5);}
+.ckpi-s{font-size:8px;color:#888;margin-top:2px;}
+
+/* EXECUTIVE SUMMARY */
+.exec-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding-bottom:16px;border-bottom:2px solid ${GOLD};}
+.exec-logo{height:36px;width:auto;object-fit:contain;}
+.exec-title{font-size:18px;font-weight:800;color:#000;}
+.exec-address{font-size:11px;color:#888;margin-top:2px;}
+.exec-date{font-size:10px;color:#aaa;}
+
+/* KPI STRIP */
+.kpi-strip{display:grid;grid-template-columns:repeat(${isLandscape?'6':'5'},1fr);gap:1px;background:#e0e0e0;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;margin-bottom:16px;}
+.kpi-c{background:#fff;padding:12px 10px;}
+.kpi-c.hl{background:#000;}
+.kpi-n{font-size:15px;font-weight:800;color:#000;}
+.kpi-c.hl .kpi-n{color:${GOLD};}
+.kpi-l{font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#888;margin-top:2px;}
 .kpi-c.hl .kpi-l{color:rgba(255,255,255,.5);}
-section{border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;margin-bottom:12px;page-break-inside:avoid;}
-.sec-hdr{background:#000;color:#fff;padding:9px 14px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;display:flex;justify-content:space-between;}
+.kpi-s{font-size:8px;color:#aaa;margin-top:2px;}
+.kpi-c.hl .kpi-s{color:rgba(255,255,255,.35);}
+
+/* SECTIONS */
+section{border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;margin-bottom:14px;page-break-inside:avoid;}
+.sec-hdr{background:#000;color:#fff;padding:9px 16px;display:flex;justify-content:space-between;align-items:center;}
+.sec-hdr-t{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;}
+.sec-hdr-v{font-size:12px;font-weight:700;color:${GOLD};}
+
+/* TABLES */
 table{width:100%;border-collapse:collapse;}
-td{padding:7px 14px;border-bottom:1px solid #f0f0f0;font-size:12px;}
+td,th{padding:6px 16px;border-bottom:1px solid #f4f4f4;font-size:11px;}
+th{font-size:9px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid #e0e0e0;background:#fafafa;}
 td:last-child{text-align:right;font-weight:600;}
-tr.tot td{background:#000;color:#fff;font-weight:700;}
-tr.sub td{background:#f4f4f4;font-weight:700;}
-.cover{background:#000;color:#fff;padding:32px;border-radius:8px;margin-bottom:20px;}
-.eyebrow{font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:rgba(255,255,255,.35);margin-bottom:10px;}
-.cover h1{color:#fff;}
-.cover p{color:rgba(255,255,255,.5);font-size:12px;}
-.footer{text-align:center;font-size:11px;color:#888;margin-top:20px;padding-top:16px;border-top:1px solid #e0e0e0;}
-.disclaimer{font-size:10px;color:#888;line-height:1.6;margin-top:16px;padding:12px 14px;background:#fafafa;border-radius:6px;}
-@media print{body{padding:16px;}@page{margin:20mm;}}
-</style></head><body>`;
+th:last-child{text-align:right;}
+tr.total td{background:#000;color:#fff;font-weight:700;font-size:12px;}
+tr.subtot td{background:#f4f4f4;font-weight:700;}
+tr:last-child td{border-bottom:none;}
 
-  // Cover
-  html += `<div class="cover">
-    <div class="eyebrow">Confidential Development Proforma · ${s.brokerage||'Multiple Realty Ltd.'}</div>
-    <h1>${address}</h1>
-    <p>${city} · ${s.finProg} · ${U.p(s.units)||'—'} units · Prepared ${date}</p>
-  </div>`;
+/* UNIT MIX CARDS */
+.unit-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#e0e0e0;border:1px solid #e0e0e0;border-radius:0 0 8px 8px;overflow:hidden;}
+.unit-card{background:#fff;padding:16px 14px;}
+.unit-card-type{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#888;margin-bottom:4px;}
+.unit-card-count{font-size:28px;font-weight:800;color:#000;line-height:1;}
+.unit-card-label{font-size:9px;color:#888;margin-top:2px;}
+.unit-card-bar{height:3px;background:${GOLD};border-radius:2px;margin:8px 0;}
+.unit-card-meta{font-size:10px;color:#555;line-height:1.7;}
+.unit-card-pct{font-size:11px;font-weight:700;color:${GOLD};}
 
-  // Executive KPIs
-  html += `<div class="kpi">
-    <div class="kpi-c hl"><div class="kpi-n">${U.$(calc.stabVal)}</div><div class="kpi-l">Stabilized Value</div></div>
-    <div class="kpi-c"><div class="kpi-n">${U.$(calc.noi)}</div><div class="kpi-l">NOI / Year</div></div>
-    <div class="kpi-c"><div class="kpi-n">${U.$(calc.profit)}</div><div class="kpi-l">Gross Profit</div></div>
-    <div class="kpi-c"><div class="kpi-n">${U.x(calc.dscr)}</div><div class="kpi-l">DSCR${calc.dscr>=1.1?' ✓':''}</div></div>
-    <div class="kpi-c"><div class="kpi-n">${U.$(calc.equity)}</div><div class="kpi-l">Equity Required</div></div>
-  </div>`;
+/* ALERTS */
+.alert{padding:11px 16px;border-radius:6px;margin:12px 14px;font-size:10px;line-height:1.7;}
+.alert-title{font-weight:700;font-size:11px;margin-bottom:3px;}
+.alert.warn{background:#fff8f0;border-left:3px solid #8a5c00;color:#8a5c00;}
+.alert.good{background:#f0f8f0;border-left:3px solid #2a7a2a;color:#2a7a2a;}
+.alert.info{background:#f8f4ec;border-left:3px solid ${GOLD};color:#7a5c00;}
 
-  // Property Info
-  if(s.selectedTabs.propInfo) {
-    html += `<section><div class="sec-hdr"><span>Property Information</span><span>${prop.pid||''}</span></div><table>
-      <tr><td>Address</td><td>${prop.address||'—'}</td></tr>
-      <tr><td>City / Province</td><td>${city}</td></tr>
-      <tr><td>PID</td><td>${prop.pid||'—'}</td></tr>
-      <tr><td>Legal Description</td><td>${prop.legal||'—'}</td></tr>
-      <tr><td>Current Zoning</td><td>${prop.currentZoning||'—'}</td></tr>
-      <tr><td>Proposed Zoning</td><td>${prop.proposedZoning||'—'}</td></tr>
-      <tr><td>Site Size</td><td>${U.n(U.p(s.siteSF))} SF</td></tr>
-      <tr><td>Assessment (Land)</td><td>${U.$(U.p(prop.assessLand))}</td></tr>
-      <tr><td>Assessment (Building)</td><td>${U.$(U.p(prop.assessBldg))}</td></tr>
-      <tr class="tot"><td>Assessment (Total)</td><td>${U.$(U.p(prop.assessTotal))}</td></tr>
-    </table></section>`;
-  }
+/* DSCR BAR */
+.dscr-wrap{padding:12px 16px;}
+.dscr-track{height:5px;background:#e0e0e0;border-radius:99px;overflow:hidden;margin-top:8px;}
+.dscr-fill{height:100%;border-radius:99px;}
 
-  // Development Potential
-  if(s.selectedTabs.devPotential) {
-    const totalUnits = ['studio','oneBed','oneBedDen','oneBedAda','twoBed','twoBedDen','twoBedAda','threeBed','threeBedDen','threeBedAda'].reduce((sum,k)=>sum+U.p(s[k]),0);
-    html += `<section><div class="sec-hdr"><span>Development Potential</span><span>${s.projType}</span></div><table>
-      <tr><td>Storeys</td><td>${s.storeys||'—'}</td></tr>
-      <tr><td>FSR</td><td>${s.fsr||'—'}</td></tr>
-      <tr><td>Site Size</td><td>${U.n(U.p(s.siteSF))} SF</td></tr>
-      <tr><td>Gross Floor Area (GFA)</td><td>${U.n(U.p(s.gfa))} SF</td></tr>
-      <tr><td>Net Leasable (SF)</td><td>${U.n(U.p(s.netSF))} SF</td></tr>
-      <tr><td>Efficiency</td><td>${calc.efficiency.toFixed(1)}%</td></tr>
-      <tr><td>Total Residential Units</td><td>${U.p(s.units)}</td></tr>
-      ${totalUnits>0?`<tr><td>Unit Breakdown</td><td>${[s.studio&&`${s.studio} Studio`,s.oneBed&&`${s.oneBed} 1BR`,s.twoBed&&`${s.twoBed} 2BR`,s.threeBed&&`${s.threeBed} 3BR`].filter(Boolean).join(' · ')}</td></tr>`:''}
-      <tr><td>Parking (Res / Vis)</td><td>${s.parkingRes||'—'} / ${s.parkingVis||'—'}</td></tr>
-      <tr><td>Bicycle Stalls</td><td>${s.bike||'—'}</td></tr>
-      ${s.amenityIndoor?`<tr><td>Indoor Amenity</td><td>${s.amenityIndoor} m²</td></tr>`:''}
-      ${s.amenityOutdoor?`<tr><td>Outdoor Amenity</td><td>${s.amenityOutdoor} m²</td></tr>`:''}
-    </table></section>`;
-  }
+/* TWO COL */
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;}
 
-  // Revenue
-  if(s.selectedTabs.revenue) {
-    html += `<section><div class="sec-hdr"><span>Revenue</span><span>${U.$(calc.noi)} NOI</span></div><table>
-      <tr><td>Avg Rent ($/SF/Mo)</td><td>$${U.p(s.rent)}</td></tr>
-      <tr><td>Gross Rental Income / Yr</td><td>${U.$(calc.gri)}</td></tr>
-      <tr><td>Sundry Income / Yr</td><td>${U.$(calc.sundry)}</td></tr>
-      <tr><td>Effective Gross Income</td><td>${U.$(calc.egi)}</td></tr>
-      <tr><td>Operating Expenses (${U.p(s.opex)}%)</td><td>(${U.$(calc.opex)})</td></tr>
-      <tr class="tot"><td>Net Operating Income</td><td>${U.$(calc.noi)}</td></tr>
-    </table></section>`;
-  }
+/* FOOTER */
+.footer{text-align:center;padding:16px 0 0;font-size:9px;color:#aaa;border-top:1px solid #e0e0e0;margin-top:14px;line-height:1.8;}
+.disclaimer{font-size:8px;color:#bbb;line-height:1.7;margin-top:10px;padding:10px 14px;background:#fafafa;border-radius:6px;}
 
-  // Dev Costs
-  if(s.selectedTabs.devCosts) {
-    html += `<section><div class="sec-hdr"><span>Development Costs</span><span>${U.$(calc.tdc)}</span></div><table>
-      <tr><td>Land (incl. PTT + GST)</td><td>${U.$(calc.landTot)}</td></tr>
-      <tr><td>Hard Costs (${U.p(s.hardPSF)}/SF GFA)</td><td>${U.$(calc.hard)}</td></tr>
-      <tr><td>Soft Costs</td><td>${U.$(calc.soft)}</td></tr>
-      <tr><td>Municipal Fees</td><td>${U.$(calc.muni)}</td></tr>
-      <tr><td>Financing Costs (est.)</td><td>${U.$(calc.finCost)}</td></tr>
-      <tr class="tot"><td>Total Development Cost</td><td>${U.$(calc.tdc)}</td></tr>
-    </table></section>`;
-  }
+/* PAGE BREAKS */
+.page-break{page-break-before:always;}
 
-  // Financing
-  if(s.selectedTabs.financing) {
-    html += `<section><div class="sec-hdr"><span>Financing</span><span>${s.finProg}</span></div><table>
+@media print{
+  .toolbar,.no-print{display:none!important;}
+  body{padding:${isLandscape?'12mm 14mm':'14mm'};}
+  @page{size:${isLandscape?'letter landscape':'letter portrait'};margin:0;}
+  section{page-break-inside:avoid;}
+  .cover{min-height:unset;}
+}
+</style>
+</head>
+<body>
+
+<!-- TOOLBAR -->
+<div class="toolbar no-print">
+  <button class="orient-btn" onclick="toggleOrientation()">⟲ ${isLandscape ? 'Switch to Portrait' : 'Switch to Landscape'}</button>
+  <button class="print-btn" onclick="window.print()">⎙ Print / Save PDF</button>
+</div>
+
+<!-- ── COVER PAGE ──────────────────────────────────────────── -->
+<div class="cover">
+  <div class="cover-top">
+    <div class="cover-logo-area">
+      <img src="data:image/png;base64,${window.LOGO_B64}" class="cover-logo" alt="Multiple Realty"
+        onerror="this.style.display='none';this.nextSibling.style.display='block'">
+      <span style="display:none" class="cover-logo-text">MULTIPLE REALTY</span>
+    </div>
+    <div class="cover-date">Prepared ${date}</div>
+  </div>
+
+  <div class="cover-body">
+    <div class="cover-eyebrow">Development Proforma · Confidential</div>
+    <div class="cover-title">${address}</div>
+    <div class="cover-address">${city}</div>
+    <div class="cover-tags">
+      <span class="cover-tag gold">${s.projType || 'Development'}</span>
+      <span class="cover-tag">${U.p(s.units)||'—'} Units</span>
+      <span class="cover-tag">${s.finProg || 'Financing TBD'}</span>
+      ${s.fsr ? `<span class="cover-tag">FSR ${s.fsr}</span>` : ''}
+    </div>
+  </div>
+
+  <div class="cover-divider"></div>
+
+  <div class="cover-kpi-row">
+    <div class="ckpi hl"><div class="ckpi-n">${U.$(calc.stabVal)}</div><div class="ckpi-l">Stabilized Value</div></div>
+    <div class="ckpi"><div class="ckpi-n">${U.$(calc.noi)}</div><div class="ckpi-l">NOI / Year</div></div>
+    <div class="ckpi"><div class="ckpi-n">${U.$(calc.profit)}</div><div class="ckpi-l">Gross Profit</div></div>
+    <div class="ckpi"><div class="ckpi-n">${U.x(calc.dscr)}</div><div class="ckpi-l">DSCR</div><div class="ckpi-s">${dscrOk?'✓ Compliant':dscrWarn?'⚠ Below min':'—'}</div></div>
+    ${isLandscape ? `<div class="ckpi"><div class="ckpi-n">${U.$(calc.equity)}</div><div class="ckpi-l">Equity Required</div></div><div class="ckpi"><div class="ckpi-n">${U.pct(calc.roc)}</div><div class="ckpi-l">Return on Cost</div></div>` : ''}
+  </div>
+</div>
+
+<!-- ── EXECUTIVE SUMMARY (PAGE 1 WITH LOGO) ───────────────── -->
+<div class="exec-header">
+  <div>
+    <div class="exec-title">${address}</div>
+    <div class="exec-address">${city} · ${s.finProg}</div>
+  </div>
+  <div style="text-align:right;">
+    <img src="data:image/png;base64,${window.LOGO_B64}" class="exec-logo" alt="Multiple Realty"
+      onerror="this.style.display='none'">
+    <div class="exec-date">Prepared ${date}</div>
+  </div>
+</div>
+
+<!-- KPI STRIP -->
+<div class="kpi-strip">
+  <div class="kpi-c hl"><div class="kpi-n">${U.$(calc.stabVal)}</div><div class="kpi-l">Stabilized Value</div></div>
+  <div class="kpi-c"><div class="kpi-n">${U.$(calc.noi)}</div><div class="kpi-l">NOI / Year</div></div>
+  <div class="kpi-c"><div class="kpi-n">${U.$(calc.tdc)}</div><div class="kpi-l">Total Dev. Cost</div></div>
+  <div class="kpi-c"><div class="kpi-n">${U.$(calc.profit)}</div><div class="kpi-l">Gross Profit</div><div class="kpi-s">${calc.tdc>0?(calc.profit/calc.tdc*100).toFixed(1)+'% on cost':'—'}</div></div>
+  <div class="kpi-c"><div class="kpi-n">${U.x(calc.dscr)}</div><div class="kpi-l">DSCR</div><div class="kpi-s">${dscrOk?'✓ Compliant':dscrWarn?'⚠ Below min':'—'}</div></div>
+  ${isLandscape ? `<div class="kpi-c"><div class="kpi-n">${U.$(calc.equity)}</div><div class="kpi-l">Equity Required</div></div>` : ''}
+</div>
+
+<!-- AUTO ALERTS -->
+${dscrWarn ? `<div class="alert warn"><div class="alert-title">⚠ DSCR Advisory — ${U.x(calc.dscr)}</div>CMHC MLI Select requires a minimum DSCR of 1.10x. At current inputs this project achieves ${U.x(calc.dscr)}. Options: increase rental rates, reduce land cost, or explore conventional financing.</div>` : ''}
+${dscrOk ? `<div class="alert good"><div class="alert-title">✓ DSCR ${U.x(calc.dscr)} — CMHC MLI Select Compliant</div>Debt service coverage meets the 1.10x minimum required for CMHC MLI Select (Purpose-Built Rental) financing.</div>` : ''}
+${!rlvOk && U.p(s.land) > 0 ? `<div class="alert warn"><div class="alert-title">⚠ Residual Land Value Advisory</div>${rlvMsg}. The asking price may not be fully supported by the income at current rents and costs.</div>` : ''}
+${rlvOk && U.p(s.land) > 0 ? `<div class="alert good"><div class="alert-title">✓ RLV Supports Asking Price</div>${rlvMsg}.</div>` : ''}
+
+<!-- ── PROPERTY INFORMATION ────────────────────────────────── -->
+${s.selectedTabs.propInfo ? `
+<section>
+  <div class="sec-hdr"><span class="sec-hdr-t">Property Information</span><span class="sec-hdr-v">${prop.pid||''}</span></div>
+  <table>
+    <tr><td>Address</td><td>${prop.address||'—'}</td></tr>
+    <tr><td>City / Province</td><td>${city}</td></tr>
+    ${prop.pid?`<tr><td>PID</td><td>${prop.pid}</td></tr>`:''}
+    ${prop.legal?`<tr><td>Legal Description</td><td>${prop.legal}</td></tr>`:''}
+    <tr><td>Current Zoning</td><td>${prop.currentZoning||'—'}</td></tr>
+    <tr><td>Proposed Zoning</td><td>${prop.proposedZoning||'—'}</td></tr>
+    ${siteSF>0?`<tr><td>Site Size</td><td>${U.n(siteSF)} SF${siteSF>0?' ('+((siteSF/43560).toFixed(3))+' ac)':''}</td></tr>`:''}
+    ${prop.assessLand?`<tr><td>Assessment — Land</td><td>${U.$(U.p(prop.assessLand))}</td></tr>`:''}
+    ${prop.assessBldg?`<tr><td>Assessment — Building</td><td>${U.$(U.p(prop.assessBldg))}</td></tr>`:''}
+    ${prop.assessTotal?`<tr class="total"><td>Assessment — Total</td><td>${U.$(U.p(prop.assessTotal))}</td></tr>`:''}
+  </table>
+</section>` : ''}
+
+<!-- ── DEV POTENTIAL ──────────────────────────────────────── -->
+${s.selectedTabs.devPotential ? `
+<section>
+  <div class="sec-hdr"><span class="sec-hdr-t">Development Potential</span><span class="sec-hdr-v">${s.projType} · FSR ${s.fsr||'—'}</span></div>
+  <table>
+    <tr><td>Project Type</td><td>${s.projType}</td></tr>
+    ${s.storeys?`<tr><td>Storeys</td><td>${s.storeys}</td></tr>`:''}
+    ${siteSF>0?`<tr><td>Site Size</td><td>${U.n(siteSF)} SF (${U.n(siteSF/10.764,0)} SQM)</td></tr>`:''}
+    ${s.fsr?`<tr><td>FSR</td><td>${s.fsr}</td></tr>`:''}
+    ${U.p(s.gfa)?`<tr><td>Gross Floor Area (GFA)</td><td>${U.n(U.p(s.gfa))} SF</td></tr>`:''}
+    ${U.p(s.netSF)?`<tr><td>Net Leasable Area</td><td>${U.n(U.p(s.netSF))} SF</td></tr>`:''}
+    ${calc.efficiency>0?`<tr><td>Efficiency</td><td>${calc.efficiency.toFixed(1)}%</td></tr>`:''}
+    ${U.p(s.units)?`<tr><td>Total Residential Units</td><td>${U.p(s.units)}</td></tr>`:''}
+    ${U.p(s.parkingRes)||U.p(s.parkingVis)?`<tr><td>Parking (Resident / Visitor)</td><td>${s.parkingRes||'—'} / ${s.parkingVis||'—'} stalls</td></tr>`:''}
+    ${s.bike?`<tr><td>Bicycle Stalls</td><td>${s.bike}</td></tr>`:''}
+    ${s.amenityIndoor?`<tr><td>Indoor Amenity</td><td>${s.amenityIndoor} m²</td></tr>`:''}
+    ${s.amenityOutdoor?`<tr><td>Outdoor Amenity</td><td>${s.amenityOutdoor} m²</td></tr>`:''}
+    ${s.height?`<tr><td>Building Height</td><td>${s.height}</td></tr>`:''}
+  </table>
+  ${hasUnitMix ? `
+  <div style="padding:14px 0 0;">
+    <div style="padding:0 16px 10px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#888;">Unit Mix</div>
+    <div class="unit-cards">
+      ${unitTypes.map(u => {
+        const pct = U.p(s.units) > 0 ? ((u.count / U.p(s.units)) * 100).toFixed(0) : 0
+        const barW = pct
+        return `<div class="unit-card">
+          <div class="unit-card-type">${u.label}</div>
+          <div class="unit-card-count">${u.count}</div>
+          <div class="unit-card-label">units · ${pct}% of total</div>
+          <div class="unit-card-bar" style="width:${barW}%;max-width:100%;"></div>
+          <div class="unit-card-meta">${u.count} × ${U.p(s.netSF)>0&&U.p(s.units)>0?'avg '+Math.round(U.p(s.netSF)/U.p(s.units))+' SF/unit':''}</div>
+        </div>`
+      }).join('')}
+    </div>
+  </div>
+  <table style="margin-top:12px;">
+    <thead><tr><th>Type</th><th>Count</th><th>% of Total</th></tr></thead>
+    <tbody>
+      ${unitTypes.map(u => {
+        const pct = U.p(s.units) > 0 ? ((u.count / U.p(s.units)) * 100).toFixed(1) : '0.0'
+        return `<tr><td>${u.label}</td><td>${u.count}</td><td>${pct}%</td></tr>`
+      }).join('')}
+      <tr class="total"><td>Total</td><td>${U.p(s.units)}</td><td>100%</td></tr>
+    </tbody>
+  </table>` : ''}
+</section>` : ''}
+
+<!-- ── REVENUE ─────────────────────────────────────────────── -->
+${s.selectedTabs.revenue ? `
+<section>
+  <div class="sec-hdr"><span class="sec-hdr-t">Revenue Analysis</span><span class="sec-hdr-v">${U.$(calc.noi)} NOI / Year</span></div>
+  <table>
+    <thead><tr><th>Item</th><th>Basis</th><th>Amount</th></tr></thead>
+    <tbody>
+      <tr><td>Gross Rental Income</td><td>${U.n(U.p(s.netSF))} SF × $${U.p(s.rent)}/SF/mo × 12</td><td>${U.$(calc.gri)}</td></tr>
+      <tr><td>Sundry Income (Parking + Bike)</td><td>${U.p(s.parkingRes,0)+U.p(s.parkingVis,0)} stalls × $${U.p(s.parkRate,175)}/mo × 12</td><td>${U.$(calc.sundry)}</td></tr>
+      <tr><td>Vacancy Allowance</td><td>${U.p(s.vacancy)}%</td><td>(${U.$(calc.gri+calc.sundry-calc.egi)})</td></tr>
+      <tr class="subtot"><td>Effective Gross Income (EGI)</td><td></td><td>${U.$(calc.egi)}</td></tr>
+      <tr><td>Operating Expenses</td><td>${U.p(s.opex)}% of EGI</td><td>(${U.$(calc.opex)})</td></tr>
+      <tr class="total"><td>Net Operating Income (NOI)</td><td></td><td>${U.$(calc.noi)}</td></tr>
+      <tr><td>Cap Rate</td><td></td><td>${U.pct(U.p(s.cap))}</td></tr>
+      <tr class="total"><td>Stabilized Value</td><td>NOI ÷ ${U.pct(U.p(s.cap))}</td><td>${U.$(calc.stabVal)}</td></tr>
+    </tbody>
+  </table>
+  ${U.p(s.saleable)>0&&U.p(s.salePSF)>0?`
+  <table style="margin-top:1px;border-top:1px solid #e0e0e0;">
+    <tr><td>Saleable SF</td><td>${U.n(U.p(s.saleable))} SF</td></tr>
+    <tr><td>Sale Price</td><td>$${U.p(s.salePSF)}/SF</td></tr>
+    <tr class="total"><td>Estimated Sale Revenue</td><td>${U.$(calc.saleVal)}</td></tr>
+  </table>` : ''}
+</section>` : ''}
+
+<!-- ── DEVELOPMENT COSTS ───────────────────────────────────── -->
+${s.selectedTabs.devCosts ? `
+<section>
+  <div class="sec-hdr"><span class="sec-hdr-t">Development Costs</span><span class="sec-hdr-v">${U.$(calc.tdc)} TDC · ${gfa>0?'$'+(calc.tdc/gfa).toFixed(0)+'/SF GFA':''}</span></div>
+  <table>
+    <thead><tr><th>Item</th><th>Basis</th><th>Amount</th><th>$/SF GFA</th></tr></thead>
+    <tbody>
+      <tr><td>Land (Asking Price)</td><td></td><td>${U.$(U.p(s.land))}</td><td>${gfa>0?'$'+(U.p(s.land)/gfa).toFixed(2)+'/SF':'—'}</td></tr>
+      ${s.pttEnabled!==false?`<tr><td>Property Transfer Tax (PTT)</td><td>3.0%</td><td>${U.$(calc.ptt)}</td><td>${gfa>0?'$'+(calc.ptt/gfa).toFixed(2)+'/SF':'—'}</td></tr>`:''}
+      ${s.gstEnabled!==false?`<tr><td>GST on Land</td><td>5.0%</td><td>${U.$(calc.gst)}</td><td>${gfa>0?'$'+(calc.gst/gfa).toFixed(2)+'/SF':'—'}</td></tr>`:''}
+      <tr class="subtot"><td>Land Total</td><td></td><td>${U.$(calc.landTot)}</td><td>${gfa>0?'$'+(calc.landTot/gfa).toFixed(2)+'/SF':'—'}</td></tr>
+      <tr><td>Hard Construction Costs</td><td>${U.n(gfa)} SF × $${U.p(s.hardPSF)}/SF + ${U.p(s.contingency)}% contingency</td><td>${U.$(calc.hard)}</td><td>$${(calc.hard/gfa).toFixed(2)}/SF</td></tr>
+      <tr><td>Soft Costs</td><td>Architecture, Engineering, PM, Legal, etc.</td><td>${U.$(calc.soft)}</td><td>${gfa>0?'$'+(calc.soft/gfa).toFixed(2)+'/SF':'—'}</td></tr>
+      <tr><td>Municipal Fees</td><td>DCC, BP Fee, DP Fee, CAC, Property Tax</td><td>${U.$(calc.muni)}</td><td>${gfa>0?'$'+(calc.muni/gfa).toFixed(2)+'/SF':'—'}</td></tr>
+      <tr class="subtot"><td>Pre-Financing Total</td><td></td><td>${U.$(calc.preFin)}</td><td>${gfa>0?'$'+(calc.preFin/gfa).toFixed(2)+'/SF':'—'}</td></tr>
+      <tr><td>Construction Interest (est.)</td><td>${U.p(s.constRate)}% × ${U.p(s.constMo)} mo × 55% drawn</td><td>${U.$(calc.intPaid)}</td><td>${gfa>0?'$'+(calc.intPaid/gfa).toFixed(2)+'/SF':'—'}</td></tr>
+      <tr><td>Lender / Application Fees</td><td>1.0% of construction loan</td><td>${U.$(calc.finFees)}</td><td>${gfa>0?'$'+(calc.finFees/gfa).toFixed(2)+'/SF':'—'}</td></tr>
+      <tr><td>CMHC Insurance Premium</td><td>${U.p(s.cmhcPrem)}% of permanent loan</td><td>${U.$(calc.cmhcFee)}</td><td>${gfa>0?'$'+(calc.cmhcFee/gfa).toFixed(2)+'/SF':'—'}</td></tr>
+      <tr class="subtot"><td>Total Financing Cost</td><td></td><td>${U.$(calc.finCost)}</td><td>${gfa>0?'$'+(calc.finCost/gfa).toFixed(2)+'/SF':'—'}</td></tr>
+      <tr class="total"><td>Total Development Cost (TDC)</td><td></td><td>${U.$(calc.tdc)}</td><td>${gfa>0?'$'+(calc.tdc/gfa).toFixed(2)+'/SF':'—'}</td></tr>
+    </tbody>
+  </table>
+</section>` : ''}
+
+<!-- ── FINANCING ───────────────────────────────────────────── -->
+${s.selectedTabs.financing ? `
+<section>
+  <div class="sec-hdr"><span class="sec-hdr-t">Financing — ${s.finProg}</span><span class="sec-hdr-v">DSCR ${U.x(calc.dscr)}</span></div>
+  <div class="dscr-wrap">
+    <div style="padding:8px 12px;background:${dscrBg};border:1px solid ${dscrCol};border-radius:6px;font-size:11px;font-weight:600;color:${dscrCol};display:flex;align-items:center;gap:8px;">
+      <div style="width:8px;height:8px;border-radius:50%;background:${dscrCol};flex-shrink:0;"></div>
+      ${dscrMsg}
+    </div>
+    <div class="dscr-track"><div class="dscr-fill" style="width:${dscrPct}%;background:${dscrCol};"></div></div>
+  </div>
+  <table>
+    <tbody>
       <tr><td>Permanent Loan (${U.p(s.ltv)}% LTV)</td><td>${U.$(calc.loanAmt)}</td></tr>
-      <tr><td>Interest Rate</td><td>${U.p(s.permRate)}%</td></tr>
-      <tr><td>Amortization</td><td>${U.p(s.amort)} years</td></tr>
+      <tr><td>Interest Rate</td><td>${U.p(s.permRate)}% (${U.p(s.amort)}-year amortization)</td></tr>
       <tr><td>Annual Debt Service</td><td>${U.$(calc.ads)}</td></tr>
-      <tr><td>Equity Required</td><td>${U.$(calc.equity)}</td></tr>
+      <tr><td>CMHC Insurance Fee (${U.p(s.cmhcPrem)}%)</td><td>${U.$(calc.cmhcFee)}</td></tr>
+      <tr><td>Construction Loan (${U.p(s.ltc)}% LTC)</td><td>${U.$(calc.preFin*U.p(s.ltc,85)/100)}</td></tr>
       <tr><td>Interest Paid (est.)</td><td>${U.$(calc.intPaid)}</td></tr>
-      <tr class="tot"><td>DSCR</td><td>${U.x(calc.dscr)}${calc.dscr>=1.1?' ✓':' ⚠'}</td></tr>
-    </table></section>`;
-  }
+      <tr><td>Equity Required</td><td>${U.$(calc.equity)}</td></tr>
+      <tr class="total"><td>DSCR</td><td>${U.x(calc.dscr)}${dscrOk?' ✓':dscrWarn?' ⚠':''}</td></tr>
+    </tbody>
+  </table>
+</section>` : ''}
 
-  // Returns
-  if(s.selectedTabs.returns) {
-    html += `<section><div class="sec-hdr"><span>Profit & Returns</span><span>${U.$(calc.profit)}</span></div><table>
+<!-- ── PROFIT & RETURNS ────────────────────────────────────── -->
+${s.selectedTabs.returns ? `
+<section>
+  <div class="sec-hdr"><span class="sec-hdr-t">Profit & Returns</span><span class="sec-hdr-v">${U.$(calc.profit)} Gross Profit</span></div>
+  <table>
+    <tbody>
       <tr><td>Stabilized Value</td><td>${U.$(calc.stabVal)}</td></tr>
+      <tr><td>Stabilized Value / SF (Net)</td><td>${U.psf(calc.valPerSF)}</td></tr>
+      <tr><td>Stabilized Value / Unit</td><td>${U.$(calc.valPerUnit)}</td></tr>
+      <tr class="subtot"><td colspan="2">Development Cost</td></tr>
       <tr><td>Total Development Cost</td><td>${U.$(calc.tdc)}</td></tr>
-      <tr><td>Gross Profit</td><td>${U.$(calc.profit)}</td></tr>
-      <tr><td>Return on Cost</td><td>${U.pct(calc.roc)}</td></tr>
-      <tr><td>Value / Unit</td><td>${U.$(calc.valPerUnit)}</td></tr>
-      <tr class="tot"><td>Value / SF (Net)</td><td>${U.psf(calc.valPerSF)}</td></tr>
-    </table></section>`;
-  }
+      <tr><td>Cost / SF GFA</td><td>${U.psf(calc.tdc/gfa)}</td></tr>
+      <tr><td>Cost / Unit</td><td>${U.$(calc.tdc/units)}</td></tr>
+      <tr class="subtot"><td colspan="2">Profit</td></tr>
+      <tr><td>Gross Profit</td><td style="color:${calc.profit>=0?'#2a7a2a':'#c00'}">${U.$(calc.profit)}</td></tr>
+      <tr><td>Return on Cost (NOI ÷ TDC)</td><td>${U.pct(calc.roc)}</td></tr>
+      <tr><td>Profit on Cost</td><td>${calc.tdc>0?U.pct((calc.profit/calc.tdc)*100):'—'}</td></tr>
+      <tr class="total"><td>DSCR</td><td>${U.x(calc.dscr)}</td></tr>
+    </tbody>
+  </table>
+</section>` : ''}
 
-  // RLV
-  if(s.selectedTabs.rlv) {
-    html += `<section><div class="sec-hdr"><span>Residual Land Value</span><span>${U.$(calc.rlv)}</span></div><table>
-      <tr><td>Net Proceeds</td><td>${U.$(calc.netProc)}</td></tr>
-      <tr><td>Less Construction</td><td>(${U.$(calc.construct)})</td></tr>
-      <tr><td>Less Developer Profit (${U.p(s.devProfitPct)}%)</td><td>(${U.$(calc.devProfit)})</td></tr>
-      <tr><td>Net RLV</td><td>${U.$(calc.rlv)}</td></tr>
-      <tr><td>RLV / SF</td><td>${U.psf(calc.rlvPerSF)}</td></tr>
-      <tr class="tot"><td>Variance vs Asking</td><td>${calc.rlvVar>=0?'+':''}${U.$(calc.rlvVar)} ${calc.rlvVar>=0?'✓':'⚠'}</td></tr>
-    </table></section>`;
-  }
+<!-- ── RESIDUAL LAND VALUE ─────────────────────────────────── -->
+${s.selectedTabs.rlv ? `
+<section>
+  <div class="sec-hdr"><span class="sec-hdr-t">Residual Land Value Analysis</span><span class="sec-hdr-v">${U.$(calc.rlv)} Net RLV</span></div>
+  ${U.p(s.land)>0 ? `<div class="alert ${rlvOk?'good':'warn'}"><div class="alert-title">${rlvOk?'✓':'⚠'} RLV ${rlvOk?'Supports':'Advisory —'} Asking Price</div>${rlvMsg}</div>` : ''}
+  <table>
+    <tbody>
+      <tr><td>Gross Proceeds (Stabilized Value)</td><td>${U.$(calc.stabVal)}</td></tr>
+      <tr><td>Less Sales Commission (${U.p(s.commissionPct,3.5)}%)</td><td>(${U.$(calc.stabVal*U.p(s.commissionPct,3.5)/100)})</td></tr>
+      <tr class="subtot"><td>Net Proceeds</td><td>${U.$(calc.netProc)}</td></tr>
+      <tr><td>Less Construction Costs (excl. land)</td><td>(${U.$(calc.construct)})</td></tr>
+      <tr class="subtot"><td>Land Value before Developer Profit</td><td>${U.$(calc.rlvBefore)}</td></tr>
+      <tr><td>Less Developer Profit (${U.p(s.devProfitPct,15)}%)</td><td>(${U.$(calc.devProfit)})</td></tr>
+      <tr class="total"><td>Net Residual Land Value</td><td>${U.$(calc.rlv)}</td></tr>
+      <tr><td>RLV per SF (site area)</td><td>${U.psf(calc.rlvPerSF)}</td></tr>
+      ${U.p(s.land)>0?`<tr><td>Asking Land Price</td><td>${U.$(U.p(s.land))}</td></tr><tr style="color:${rlvOk?'#2a7a2a':'#c00'}"><td>Variance (RLV − Asking)</td><td>${calc.rlvVar>=0?'+':''}${U.$(calc.rlvVar)} ${calc.rlvVar>=0?'✓':'⚠'}</td></tr>`:''}
+    </tbody>
+  </table>
+</section>` : ''}
 
-  // Comps
-  if(s.selectedTabs.comparables && s.comps.some(c=>c.address)) {
-    const fsr = U.p(s.fsr,2);
-    html += `<section><div class="sec-hdr"><span>Comparable Sales</span></div>
-    <table><tr><td style="font-weight:700">Address</td><td style="font-weight:700">Date</td><td style="font-weight:700;text-align:right">Site SF</td><td style="font-weight:700;text-align:right">Sale Price</td><td style="font-weight:700;text-align:right">$/BPSF</td></tr>
-    ${s.comps.filter(c=>c.address).map(c=>{
-      const sf=U.p(c.siteSF), sp=U.p(c.salePrice);
-      const bpsf=fsr>0&&sf>0&&sp>0?'$'+(sp/(sf*fsr)).toFixed(0):'—';
-      return `<tr><td>${c.address}</td><td>${c.date||'—'}</td><td style="text-align:right">${U.n(sf)}</td><td style="text-align:right">${U.$(sp)}</td><td style="text-align:right;font-weight:700">${bpsf}</td></tr>`;
-    }).join('')}
-    </table></section>`;
-  }
+<!-- ── COMPARABLE SALES ────────────────────────────────────── -->
+${hasComps ? `
+<section>
+  <div class="sec-hdr"><span class="sec-hdr-t">Comparable Sales</span><span class="sec-hdr-v">$/BPSF @ FSR ${fsr}</span></div>
+  <table>
+    <thead><tr><th>Address</th><th>Date</th><th>Site SF</th><th>Zoning</th><th>Sale Price</th><th>$/SF Site</th><th>$/BPSF</th><th>Notes</th></tr></thead>
+    <tbody>
+      ${s.comps.filter(c=>c.address).map(c=>{
+        const sf=U.p(c.siteSF),sp=U.p(c.salePrice)
+        const psfSite=sf>0&&sp>0?'$'+(sp/sf).toFixed(0):'—'
+        const bpsf=fsr>0&&sf>0&&sp>0?'$'+Math.round(sp/(sf*fsr)).toLocaleString('en-CA'):'—'
+        return `<tr><td>${c.address}</td><td>${c.date||'—'}</td><td>${U.n(sf)}</td><td>${c.zoning||'—'}</td><td>${U.$(sp)}</td><td>${psfSite}</td><td style="font-weight:700">${bpsf}</td><td style="font-size:10px;color:#888">${c.notes||''}</td></tr>`
+      }).join('')}
+      ${U.p(s.land)>0&&siteSF>0?`
+      <tr class="subtot"><td><strong>Subject Property</strong></td><td>—</td><td>${U.n(siteSF)}</td><td>${prop.proposedZoning||'—'}</td><td>${U.$(U.p(s.land))}</td><td>$${(U.p(s.land)/siteSF).toFixed(0)}</td><td style="font-weight:700">${fsr>0?'$'+Math.round(U.p(s.land)/(siteSF*fsr)).toLocaleString('en-CA'):'—'}</td><td style="font-size:10px">Subject</td></tr>` : ''}
+    </tbody>
+  </table>
+</section>` : ''}
 
-  // Schedule
-  if(s.selectedTabs.schedule && s.schedule.some(t=>t.start||t.end)) {
-    html += `<section><div class="sec-hdr"><span>Project Schedule</span></div>
-    <table><tr><td style="font-weight:700">Phase</td><td style="font-weight:700">Milestone</td><td style="font-weight:700;text-align:right">Start</td><td style="font-weight:700;text-align:right">Target</td></tr>
-    ${s.schedule.filter(t=>t.task).map(t=>`<tr><td style="color:#888;font-size:11px">${t.phase}</td><td>${t.task}</td><td style="text-align:right">${t.start||'—'}</td><td style="text-align:right">${t.end||'—'}</td></tr>`).join('')}
-    </table></section>`;
-  }
+<!-- ── PROJECT SCHEDULE (only if dates entered) ───────────── -->
+${hasSchedule ? `
+<section>
+  <div class="sec-hdr"><span class="sec-hdr-t">Project Schedule</span></div>
+  <table>
+    <thead><tr><th>Phase</th><th>Milestone</th><th>Start</th><th>Target</th><th>Status</th></tr></thead>
+    <tbody>
+      ${s.schedule.filter(t=>t.task&&(t.start||t.end)).map(t=>`
+      <tr><td style="font-size:10px;color:#888">${t.phase}</td><td>${t.task}</td><td>${t.start||'—'}</td><td>${t.end||'—'}</td>
+      <td><span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:9px;font-weight:700;background:${t.status==='complete'?'#f0f8f0':t.status==='active'?'#fff8f0':'#f0f0f0'};color:${t.status==='complete'?'#2a7a2a':t.status==='active'?'#8a5c00':'#888'}">${t.status.charAt(0).toUpperCase()+t.status.slice(1)}</span></td>
+      </tr>`).join('')}
+    </tbody>
+  </table>
+</section>` : ''}
 
-  // Footer
-  html += `<div class="footer">
-    Prepared by <strong>${s.preparedBy||'Steven Dong'}</strong> · ${s.brokerage||'Multiple Realty Ltd.'} · ${s.phone||'236-999-3333'} · ${s.website||'www.vancouvertoprealestate.co'}
-  </div>
-  <div class="disclaimer">
-    This proforma is prepared for feasibility and investment analysis purposes only. All financial projections, valuations, income estimates, development costs and financing terms are estimates based on inputs provided and publicly available data. They do not constitute a guarantee of future performance or investment returns. All AI-pre-populated fields have been reviewed by the agent. Any interested party should conduct their own independent due diligence including qualified legal, financial and real estate advisors before making any investment decision. © ${new Date().getFullYear()} ${s.brokerage||'Multiple Realty Ltd.'}
-  </div>
-  <button onclick="window.print()" style="margin-top:20px;padding:12px 28px;background:#000;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:700;cursor:pointer;" class="no-print">⎙ Print / Save PDF</button>
-  </body></html>`;
+<!-- FOOTER -->
+<div class="footer">
+  Prepared by <strong>${s.preparedBy||'Steven Dong'}</strong> · ${s.brokerage||'Multiple Realty Ltd.'} · ${s.phone||'236-999-3333'} · ${s.website||'www.vancouvertoprealestate.co'}<br>
+  Generated by Apex Proforma · ${date}
+</div>
+<div class="disclaimer">
+  CONFIDENTIAL — This proforma is prepared for feasibility and investment analysis purposes only. All financial projections, valuations, income estimates, development costs and financing terms are estimates based on inputs provided and publicly available market data. They do not constitute a guarantee of future performance or investment returns. DSCR and CMHC eligibility must be confirmed with a CMHC-approved lender. All interested parties should conduct independent due diligence including qualified legal, financial and real estate advisors before making any investment decision. © ${new Date().getFullYear()} ${s.brokerage||'Multiple Realty Ltd.'}
+</div>
+
+<script>
+function toggleOrientation() {
+  const url = new URL(window.location.href);
+  // Re-download with opposite orientation — handled via print settings
+  window.print();
+}
+</script>
+
+</body>
+</html>`
 
   // Download
-  const blob = new Blob([html],{type:'text/html'});
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  const addrClean = (prop.address||'Proforma').replace(/[^a-zA-Z0-9]/g,'_').substring(0,40);
-  a.download = `Proforma_${addrClean}_${new Date().toISOString().slice(0,10)}.html`;
-  a.click();
-  URL.revokeObjectURL(url);
-  showToast('✓ Proforma downloaded — open in browser to print');
+  const blob = new Blob([html],{type:'text/html'})
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href     = url
+  const addrClean = (prop.address||'Proforma').replace(/[^a-zA-Z0-9]/g,'_').substring(0,40)
+  a.download = `Proforma_${addrClean}_${new Date().toISOString().slice(0,10)}.html`
+  a.click()
+  URL.revokeObjectURL(url)
+  showToast('✓ Proforma downloaded — open in browser to print · Use ⟲ button to toggle portrait/landscape')
 }
+
 
 // ── AI PLAN EXTRACTION ────────────────────────────────────────────
 async function analysePlans(s) {
