@@ -1179,7 +1179,7 @@ function lineItemsTable(items, onChange, showBPSF=false, gfa=0) {
 }
 
 // ── NAV BUTTON ROW ────────────────────────────────────────────────
-function navRow(onBack, onNext, nextLabel='Continue →', backLabel='← Back') {
+function navRow(onBack, onNext, nextLabel='Continue →', backLabel='← Back', requiredFields=[]) {
   const row = document.createElement('div');
   row.className = 'no-print';
   row.style.cssText = 'display:flex;gap:10px;margin-top:20px;';
@@ -1196,7 +1196,20 @@ function navRow(onBack, onNext, nextLabel='Continue →', backLabel='← Back') 
   next.className = 'btn btn-primary';
   next.style.flex = '1';
   next.textContent = nextLabel;
-  next.onclick = onNext;
+  next.onclick = () => {
+    if(onNext) {
+      // Check required fields before navigating forward
+      if(requiredFields.length > 0) {
+        const s = Store.get();
+        const missing = requiredFields.filter(f => !s[f.key] || String(s[f.key]).trim() === '');
+        if(missing.length > 0) {
+          showToast('⚠ Please fill in: ' + missing.map(f => f.label).join(', '), true);
+          return;
+        }
+      }
+      onNext();
+    }
+  };
   row.appendChild(next);
 
   return row;
@@ -3333,12 +3346,14 @@ function _doRender() {
     } catch(e) {
       // Render error — show recovery UI
       console.error('[RenderError]', s.currentSheet, e);
+      // Reset to project sheet on error to avoid stuck state
+      Store._state.currentSheet = 'project';
       content.innerHTML = `
         <div style="max-width:600px;margin:60px auto;text-align:center;padding:0 20px;">
           <div style="font-size:36px;margin-bottom:16px">⚠️</div>
           <h2 style="font-size:18px;margin-bottom:8px">This section encountered an error</h2>
           <p style="color:#555;font-size:13px;margin-bottom:20px;line-height:1.6">Your data is safe. Click another tab to continue or try reloading.</p>
-          <button onclick="Store.navigate('project');renderApp();" style="padding:10px 24px;background:#000;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:700;">Go to Project Type</button>
+          <button onclick="Store._state.currentSheet='project';Store._notify();" style="padding:10px 24px;background:#000;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:700;">Go to Project Type</button>
           <pre style="margin-top:20px;font-size:10px;color:#aaa;text-align:left;background:#f5f5f5;padding:12px;border-radius:6px;overflow:auto;">${e.toString()}</pre>
         </div>
       `;
@@ -3365,6 +3380,21 @@ function boot() {
 
   console.log('[ProformaApp v8] Booted successfully');
 }
+
+
+// Tab order fix — prevent tab from going to browser address bar
+document.addEventListener('keydown', function(e) {
+  if(e.key === 'Tab') {
+    const inputs = Array.from(document.querySelectorAll('#sheet-content input:not([disabled]), #sheet-content select:not([disabled]), #sheet-content textarea:not([disabled])'));
+    const current = document.activeElement;
+    const idx = inputs.indexOf(current);
+    if(idx >= 0) {
+      e.preventDefault();
+      const next = e.shiftKey ? inputs[idx - 1] : inputs[idx + 1];
+      if(next) { next.focus(); next.select && next.select(); }
+    }
+  }
+});
 
 // Start when DOM is ready
 if(document.readyState==='loading') {
